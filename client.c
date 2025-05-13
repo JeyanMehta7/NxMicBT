@@ -5,7 +5,7 @@
  */
 
 #include <stdio.h>
-
+#include "nxmic_gatt.h"
 #include "btstack.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
@@ -110,7 +110,7 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
           DEBUG_LOG("Search for env sensing characteristic.\n");
           gatt_client_discover_characteristics_for_service_by_uuid16(
               handle_gatt_client_event, connection_handle, &server_service,
-              ORG_BLUETOOTH_CHARACTERISTIC_TEMPERATURE);
+              nxmic_gatt_service.uuid128);
           break;
         default:
           break;
