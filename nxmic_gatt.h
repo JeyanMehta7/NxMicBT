@@ -121,7 +121,7 @@ gatt_service_t nxmic_gatt_service = {
           .value_handle = 0x0000,
           .properties = GATT_CHAR_WRITE},
 
-         // Battery Level Characteristic
+         //    Level Characteristic
          {.char_id = CHAR_BATTERY_LEVEL,
           .uuid128 = {0x99, 0x99, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x10,
                       0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe},
