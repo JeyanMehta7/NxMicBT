@@ -72,6 +72,14 @@ static uint16_t battery_level_length;  // Battery level length Global Variable
 static uint8_t *timestamp;         // Timestamp Global Variable
 static uint16_t timestamp_length;  // Timestamp length Global Variable
 
+// Function Declerations
+static void client_start(void);
+static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
+                                     uint8_t *packet, uint16_t size);
+static void hci_event_handler(uint8_t packet_type, uint16_t channel,
+                              uint8_t *packet, uint16_t size);
+static void heartbeat_handler(struct btstack_timer_source *ts);
+
 // Add these structures and helper functions after the includes
 typedef struct {
   gatt_client_characteristic_t characteristic;
@@ -117,8 +125,7 @@ static void process_firmware_version(const uint8_t *value, uint16_t length) {
 static void process_battery_level(const uint8_t *value, uint16_t length) {
   battery_level = value;
   battery_level_length = length;
-  uint32_t raw_value = (battery_level[3] << 24) | (battery_level[2] << 16) |
-                       (battery_level[1] << 8) | battery_level[0];
+  uint32_t raw_value = little_endian_read_32(battery_level, 0);
   float battery = *(float *)&raw_value;
   printf("Battery level: %f\n", battery);
 }
@@ -149,6 +156,12 @@ static characteristic_handler_t characteristic_handlers[] = {
      .name = "Timestamp",
      .process_value = process_timestamp}};
 
+enum characteristic_index {
+  FIRMWARE_VERSION,
+  BATTERY_LEVEL,
+  TIMESTAMP,
+};
+
 // Add this before the handle_gatt_client_event function
 static characteristic_handler_t *current_handler = NULL;
 
@@ -157,6 +170,16 @@ static void client_start(void) {
   state = STATE_W4_SCAN_RESULT;
   gap_set_scan_parameters(0, 0x0030, 0x0030);
   gap_start_scan();
+}
+
+bool checkEventQueryComplete(uint8_t *packet) {
+  uint8_t att_status = gatt_event_query_complete_get_att_status(packet);
+  if (att_status != ATT_ERROR_SUCCESS) {
+    printf("Query complete failed, ATT Error 0x%02x\n", att_status);
+    gap_disconnect(connection_handle);
+    return false;
+  }
+  return true;
 }
 
 static bool advertisement_report_contains_service(
@@ -206,7 +229,6 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
   UNUSED(channel);
   UNUSED(size);
 
-  uint8_t att_status;
   switch (state) {
     case STATE_W4_SERVICE_RESULT:
       switch (hci_event_packet_get_type(packet)) {
@@ -214,14 +236,9 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
           gatt_event_service_query_result_get_service(packet, &server_service);
           break;
         case GATT_EVENT_QUERY_COMPLETE:
-          att_status = gatt_event_query_complete_get_att_status(packet);
-          if (att_status != ATT_ERROR_SUCCESS) {
-            printf("Service query failed, ATT Error 0x%02x\n", att_status);
-            gap_disconnect(connection_handle);
-            break;
-          }
+          if (!checkEventQueryComplete(packet)) break;
           // Start with first characteristic
-          current_handler = &characteristic_handlers[0];
+          current_handler = &characteristic_handlers[FIRMWARE_VERSION];
           state = STATE_W4_CHARACTERISTIC_RESULT;
           discover_characteristic(current_handler);
           break;
@@ -235,17 +252,12 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
               packet, &current_handler->characteristic);
           break;
         case GATT_EVENT_QUERY_COMPLETE:
-          att_status = gatt_event_query_complete_get_att_status(packet);
-          if (att_status != ATT_ERROR_SUCCESS) {
-            printf("Characteristic query failed, ATT Error 0x%02x\n",
-                   att_status);
-            gap_disconnect(connection_handle);
-            break;
-          }
+          if (!checkEventQueryComplete(packet)) break;
 
           state = STATE_W4_CHARACTERISTIC_READ;
           if (current_handler ==
-              &characteristic_handlers[2]) {  // Timestamp handler
+              &characteristic_handlers[TIMESTAMP]) {  // Timestamp handler
+            DEBUG_LOG("Writing timestamp\n");
             // Special handling for timestamp - write current time
             time_t now = time(NULL);
             struct tm *time_info = localtime(&now);
@@ -259,6 +271,7 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
             state = STATE_W4_CHARACTERISTIC_WRITE;
             write_characteristic_value(current_handler, 8, ts_bytes);
           } else {
+            DEBUG_LOG("Reading characteristic\n");
             read_characteristic_value(current_handler);
           }
           break;
@@ -274,19 +287,15 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
                   packet));
           break;
         case GATT_EVENT_QUERY_COMPLETE:
-          att_status = gatt_event_query_complete_get_att_status(packet);
-          if (att_status != ATT_ERROR_SUCCESS) {
-            printf("Read failed, ATT Error 0x%02x\n", att_status);
-            gap_disconnect(connection_handle);
-            break;
-          }
+          if (!checkEventQueryComplete(packet)) break;
 
           // Move to next characteristic or finish
           current_handler++;
-          if (current_handler < &characteristic_handlers[3]) {
+          if (current_handler <= &characteristic_handlers[TIMESTAMP]) {
             state = STATE_W4_CHARACTERISTIC_RESULT;
             discover_characteristic(current_handler);
           } else {
+            DEBUG_LOG("All characteristics read, disconnecting\n");
             state = STATE_OFF;
           }
           break;
@@ -296,12 +305,7 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
     case STATE_W4_CHARACTERISTIC_WRITE:
       switch (hci_event_packet_get_type(packet)) {
         case GATT_EVENT_QUERY_COMPLETE:
-          att_status = gatt_event_query_complete_get_att_status(packet);
-          if (att_status != ATT_ERROR_SUCCESS) {
-            printf("Write failed, ATT Error 0x%02x\n", att_status);
-            gap_disconnect(connection_handle);
-            break;
-          }
+          if (!checkEventQueryComplete(packet)) break;
           state = STATE_W4_CHARACTERISTIC_READ;
           read_characteristic_value(current_handler);
           break;
